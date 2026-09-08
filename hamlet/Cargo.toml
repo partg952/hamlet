@@ -11,6 +11,7 @@ hamlet-common = { path = "../hamlet-common", features = ["user"] }
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
 aya-log = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
@@ -20,6 +21,7 @@ tokio = { workspace = true, features = [
     "rt-multi-thread",
     "net",
     "signal",
+    "time"
 ] }
 [build-dependencies]
 anyhow = { workspace = true }

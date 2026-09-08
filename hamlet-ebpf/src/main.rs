@@ -2,9 +2,20 @@
 #![no_main]
 
 use aya_ebpf::{
-    EbpfContext, helpers::bpf_get_smp_processor_id, macros::perf_event, programs::PerfEventContext,
+    bindings::BPF_F_USER_STACK,
+    helpers::bpf_get_current_pid_tgid,
+    macros::{map, perf_event},
+    maps::{Array, HashMap, StackTrace},
+    programs::{PerfEventContext, tracing::StackIdContext},
 };
-use aya_log_ebpf::info;
+use hamlet_common::StackKey;
+
+#[map]
+static SAMPLE_COUNT: Array<u64> = Array::with_max_entries(1, 0);
+#[map]
+static HIST: HashMap<StackKey, u64> = HashMap::with_max_entries(65592, 0);
+#[map]
+static STRACE_MAP: StackTrace = StackTrace::with_max_entries(65592, 0);
 
 #[perf_event]
 pub fn hamlet(ctx: PerfEventContext) -> u32 {
@@ -15,17 +26,23 @@ pub fn hamlet(ctx: PerfEventContext) -> u32 {
 }
 
 fn try_hamlet(ctx: PerfEventContext) -> Result<u32, u32> {
-    let cpu = unsafe { bpf_get_smp_processor_id() };
-    match ctx.pid() {
-        0 => info!(
-            &ctx,
-            "perf_event 'perftest' triggered on CPU {}, running a kernel task", cpu
-        ),
-        pid => info!(
-            &ctx,
-            "perf_event 'perftest' triggered on CPU {}, running PID {}", cpu, pid
-        ),
-    }
+    let uspace_stack_id = ctx
+        .get_stackid(&STRACE_MAP, BPF_F_USER_STACK as u64)
+        .map_err(|_| 1u32)?;
+    let kspace_stack_id = ctx.get_stackid(&STRACE_MAP, 0).map_err(|_| 1u32)?;
+    let pid = bpf_get_current_pid_tgid() >> 32;
+    let stack_key = StackKey {
+        pid,
+        kspace_id: kspace_stack_id,
+        uspace_id: uspace_stack_id,
+    };
+
+    
+    if let Some(count) = HIST.get_ptr_mut(&stack_key) {
+        unsafe { *count += 1 };
+    } else {
+        HIST.insert(&stack_key, &1u64, 0).map_err(|_| 1u32)?;
+    };
 
     Ok(0)
 }

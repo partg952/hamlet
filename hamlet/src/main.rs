@@ -1,13 +1,25 @@
 use aya::{
+    maps::{Array, HashMap, StackTraceMap, stack_trace::StackTrace},
     programs::{PerfEvent, perf_event},
-    util::online_cpus,
+    util::{kernel_symbols, online_cpus},
 };
+use clap::Parser;
+use hamlet_common::StackKey;
+use std::time::Duration;
 #[rustfmt::skip]
 use log::{debug, warn};
-use tokio::signal;
+use tokio::{signal, time::interval};
+
+#[derive(clap::Parser)]
+struct Args {
+    #[arg(long)]
+    pid : Option<u32>
+}
+
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
     env_logger::init();
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
@@ -58,11 +70,65 @@ async fn main() -> anyhow::Result<()> {
             true,
         )?;
     }
+    // let sample_count : Array<_, u64> = ebpf.map_mut("SAMPLE_COUNT").into()?;
 
+    let strace_map: StackTraceMap<_> = ebpf
+        .map("STRACE_MAP")
+        .ok_or_else(|| anyhow::anyhow!("STRACE_MAP not found"))?
+        .try_into()?;
+    let histogram: HashMap<_, StackKey, u64> = ebpf
+        .map("HIST")
+        .ok_or_else(|| anyhow::anyhow!("HIST not found"))?
+        .try_into()?;
+    let mut ticker = interval(Duration::from_secs(1));
+    let mut time = 10;
     let ctrl_c = signal::ctrl_c();
+    tokio::pin!(ctrl_c);
     println!("Waiting for Ctrl-C...");
-    ctrl_c.await?;
-    println!("Exiting...");
+    loop {
+        if time == 0 {
+            break;
+        }
+        tokio::select! {
+            _ = ticker.tick() => {
+                time-=1;
+            }
+            _ = &mut ctrl_c => {
+                println!("exiting");
+                break;
+            }
+        }
+    }
+    let ksyms = kernel_symbols()?;
+    for entry in histogram.iter() {
+        let (stack_key, count) = entry?;
+        if let Some(arg_pid) = args.pid {
+            if arg_pid as u64 != stack_key.pid {
+                // println!("{}" , arg_pid);
+                continue;
+            }
+        }
+        println!("{:?} : {count}", stack_key.pid);
+        if stack_key.kspace_id >= 0 {
+            let kernel_trace = strace_map.get(&(stack_key.kspace_id as u32), 0)?;
+            for frame in kernel_trace.frames() {
+                match ksyms.range(..=frame.ip).next_back() {
+                    Some(name) => {
+                        println!("[k] {:#x} : {} " , frame.ip , name.1)
+                    }
+                    None => {
+                        println!("[k] {:#x}" , frame.ip);
+                    }
+                }
+            }
+        }
+        if stack_key.uspace_id >= 0 {
+            let userspace_trace = strace_map.get(&(stack_key.uspace_id as u32), 0)?;
+            for frame in userspace_trace.frames() {
+                println!("[u] {:#x}" , frame.ip);
+            }
+        }
+    }
 
     Ok(())
 }

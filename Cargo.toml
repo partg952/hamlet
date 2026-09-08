@@ -29,6 +29,7 @@ libc = { version = "0.2.159", default-features = false }
 log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "6.0.0", default-features = false }
+addr2line = "0.27.1"
 
 [profile.release.package.hamlet-ebpf]
 debug = 2
