@@ -26,10 +26,13 @@ pub fn hamlet(ctx: PerfEventContext) -> u32 {
 }
 
 fn try_hamlet(ctx: PerfEventContext) -> Result<u32, u32> {
+    // A failed stack walk (kernel or userspace) shouldn't drop the whole
+    // sample - record -1 for that half and keep whichever half succeeded.
+    // main.rs already checks `>= 0` before resolving either stack.
     let uspace_stack_id = ctx
         .get_stackid(&STRACE_MAP, BPF_F_USER_STACK as u64)
-        .map_err(|_| 1u32)?;
-    let kspace_stack_id = ctx.get_stackid(&STRACE_MAP, 0).map_err(|_| 1u32)?;
+        .unwrap_or(-1);
+    let kspace_stack_id = ctx.get_stackid(&STRACE_MAP, 0).unwrap_or(-1);
     let pid = bpf_get_current_pid_tgid() >> 32;
     let stack_key = StackKey {
         pid,

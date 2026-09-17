@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 hamlet-common = { path = "../hamlet-common", features = ["user"] }
-
+addr2line = {workspace = true}
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
 aya-log = { workspace = true }
