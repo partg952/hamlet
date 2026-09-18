@@ -1,6 +1,5 @@
-
 use aya::{
-    maps::{Array, HashMap, StackTraceMap, stack_trace::StackTrace},
+    maps::{HashMap, StackTraceMap},
     programs::{PerfEvent, perf_event},
     util::{kernel_symbols, online_cpus},
 };
@@ -42,8 +41,7 @@ fn read_maps(pid: u32) -> anyhow::Result<Vec<Mapping>> {
             None => continue,
         };
 
-        let (start, end) = match range.s
-            plit_once("-") {
+        let (start, end) = match range.split_once("-") {
             Some(pair) => pair,
             None => continue,
         };
@@ -51,8 +49,7 @@ fn read_maps(pid: u32) -> anyhow::Result<Vec<Mapping>> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let end = match u64::fro
-            m_str_radix(end, 16) {
+        let end = match u64::from_str_radix(end, 16) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -83,7 +80,26 @@ impl UserSymbolResolver {
             loader: StdHashMap::new()
         }
     }
-    fn resolve(&mut self , pid : u32 , ip: u64) -> Option<>
+    fn resolve(&mut self, pid: u32, ip: u64) -> Option<String> {
+        let mappings = self
+            .maps_cache
+            .entry(pid)
+            .or_insert_with(|| read_maps(pid).unwrap_or_default());
+
+        let mapping = find_mapping(mappings, ip)?;
+
+        let file_offset = to_file_offset(mapping, ip);
+        let path = mapping.path.clone();
+
+        let loader = self
+            .loader
+            .entry(path.clone())
+            .or_insert_with(|| addr2line::Loader::new(&path).ok());
+
+        let loader = loader.as_ref()?;
+        loader.find_symbol(file_offset).map(String::from)
+    }
+    
 }
 
 fn find_mapping<'a>(mappings: &'a Vec<Mapping>, ip : u64) -> Option<&'a Mapping> {
@@ -176,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let ksyms = kernel_symbols()?;
+    let mut user_sym = UserSymbolResolver::new();
     for entry in histogram.iter() {
         let (stack_key, count) = entry?;
         if let Some(arg_pid) = args.pid {
@@ -201,7 +218,10 @@ async fn main() -> anyhow::Result<()> {
         if stack_key.uspace_id >= 0 {
             let userspace_trace = strace_map.get(&(stack_key.uspace_id as u32), 0)?;
             for frame in userspace_trace.frames() {
-                println!("[u] {:#x}", frame.ip);
+                match user_sym.resolve(stack_key.pid as u32, frame.ip) {
+                    Some(name) => println!("[u] {:#x} : {}", frame.ip, name),
+                    None => println!("[u] {:#x}", frame.ip),
+                }
             }
         }
     }
