@@ -23,5 +23,6 @@ fn main() -> anyhow::Result<()> {
             .as_str(),
         ..Default::default()
     };
-    aya_build::build_ebpf([ebpf_package], Toolchain::default())
+    // Pinned to a nightly whose LLVM major version matches the one bpf-linker is built against.
+    aya_build::build_ebpf([ebpf_package], Toolchain::Custom("nightly-2026-04-15"))
 }

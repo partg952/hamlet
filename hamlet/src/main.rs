@@ -5,7 +5,12 @@ use aya::{
 };
 use clap::Parser;
 use hamlet_common::StackKey;
-use std::{collections::HashMap as StdHashMap, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap as StdHashMap},
+    fs,
+    path::PathBuf,
+    time::Duration,
+};
 #[rustfmt::skip]
 use log::{debug, warn};
 
@@ -33,7 +38,10 @@ fn read_maps(pid: u32) -> anyhow::Result<Vec<Mapping>> {
             None => continue,
         };
         parts.next();
-        let offset_str = match parts.next() {Some(o) => o , None => continue};
+        let offset_str = match parts.next() {
+            Some(o) => o,
+            None => continue,
+        };
         parts.next();
         parts.next();
         let path_str = match parts.next() {
@@ -69,16 +77,16 @@ fn read_maps(pid: u32) -> anyhow::Result<Vec<Mapping>> {
 }
 
 struct UserSymbolResolver {
-    maps_cache: StdHashMap<u32 , Vec<Mapping>>,
-    loader:StdHashMap<PathBuf , Option<addr2line::Loader>>
+    maps_cache: StdHashMap<u32, Vec<Mapping>>,
+    loader: StdHashMap<PathBuf, Option<addr2line::Loader>>,
 }
 
 impl UserSymbolResolver {
     fn new() -> UserSymbolResolver {
         return Self {
-            maps_cache : StdHashMap::new(),
-            loader: StdHashMap::new()
-        }
+            maps_cache: StdHashMap::new(),
+            loader: StdHashMap::new(),
+        };
     }
     fn resolve(&mut self, pid: u32, ip: u64) -> Option<String> {
         let mappings = self
@@ -99,15 +107,24 @@ impl UserSymbolResolver {
         let loader = loader.as_ref()?;
         loader.find_symbol(file_offset).map(String::from)
     }
-    
 }
 
-fn find_mapping<'a>(mappings: &'a Vec<Mapping>, ip : u64) -> Option<&'a Mapping> {
+fn find_mapping<'a>(mappings: &'a Vec<Mapping>, ip: u64) -> Option<&'a Mapping> {
     mappings.iter().find(|map| ip >= map.start && ip < map.end)
 }
 
-fn to_file_offset(mapping: &Mapping , ip: u64) -> u64 {
+fn to_file_offset(mapping: &Mapping, ip: u64) -> u64 {
     ip - mapping.start + mapping.offset
+}
+
+/// Name used as the root frame of every folded stack. Falls back to the pid
+/// if the process has already exited.
+fn process_name(pid: u64) -> String {
+    fs::read_to_string(format!("/proc/{pid}/comm"))
+        .map(|comm| comm.trim().replace(';', "_"))
+        .ok()
+        .filter(|comm| !comm.is_empty())
+        .unwrap_or_else(|| pid.to_string())
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -176,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
     let mut time = 10;
     let ctrl_c = signal::ctrl_c();
     tokio::pin!(ctrl_c);
-    println!("Waiting for Ctrl-C...");
+    eprintln!("Waiting for Ctrl-C...");
     loop {
         if time == 0 {
             break;
@@ -186,44 +203,53 @@ async fn main() -> anyhow::Result<()> {
                 time-=1;
             }
             _ = &mut ctrl_c => {
-                println!("exiting");
+                eprintln!("exiting");
                 break;
             }
         }
     }
     let ksyms = kernel_symbols()?;
     let mut user_sym = UserSymbolResolver::new();
+
+    // Samples are bucketed by stack *id*, so the same logical stack can show up
+    // under several ids (e.g. different instruction offsets inside one function).
+    // Folding by resolved symbol names merges them back together.
+    let mut folded: BTreeMap<String, u64> = BTreeMap::new();
     for entry in histogram.iter() {
         let (stack_key, count) = entry?;
         if let Some(arg_pid) = args.pid {
             if arg_pid as u64 != stack_key.pid {
-                // println!("{}" , arg_pid);
                 continue;
             }
         }
-        println!("{:?} : {count}", stack_key.pid);
-        if stack_key.kspace_id >= 0 {
-            let kernel_trace = strace_map.get(&(stack_key.kspace_id as u32), 0)?;
-            for frame in kernel_trace.frames() {
-                match ksyms.range(..=frame.ip).next_back() {
-                    Some(name) => {
-                        println!("[k] {:#x} : {} ", frame.ip, name.1)
-                    }
-                    None => {
-                        println!("[k] {:#x}", frame.ip);
-                    }
-                }
-            }
-        }
+
+        // Folded format is root-first, but the kernel stores frames leaf-first.
+        // A sampled stack runs: process -> user frames -> kernel frames (leaf).
+        let mut frames = vec![process_name(stack_key.pid)];
         if stack_key.uspace_id >= 0 {
             let userspace_trace = strace_map.get(&(stack_key.uspace_id as u32), 0)?;
-            for frame in userspace_trace.frames() {
-                match user_sym.resolve(stack_key.pid as u32, frame.ip) {
-                    Some(name) => println!("[u] {:#x} : {}", frame.ip, name),
-                    None => println!("[u] {:#x}", frame.ip),
-                }
+            for frame in userspace_trace.frames().iter().rev() {
+                frames.push(
+                    user_sym
+                        .resolve(stack_key.pid as u32, frame.ip)
+                        .unwrap_or_else(|| format!("{:#x}", frame.ip)),
+                );
             }
         }
+        if stack_key.kspace_id >= 0 {
+            let kernel_trace = strace_map.get(&(stack_key.kspace_id as u32), 0)?;
+            for frame in kernel_trace.frames().iter().rev() {
+                frames.push(match ksyms.range(..=frame.ip).next_back() {
+                    Some((_, name)) => name.clone(),
+                    None => format!("{:#x}", frame.ip),
+                });
+            }
+        }
+        *folded.entry(frames.join(";")).or_default() += count;
+    }
+
+    for (stack, count) in folded {
+        println!("{stack} {count}");
     }
 
     Ok(())

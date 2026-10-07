@@ -1,0 +1,14 @@
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b69;0x40058c;0x400563;0x400510 1
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b69;0x40058c;0x400563;0x40051f 1
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b6e;0x4006cb;0x400634 1
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b6e;0x4006e4;qsort_r;qsort_r_mergesort;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0 1
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b6e;0x4006e4;qsort_r;qsort_r_mergesort;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0 1
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b6e;0x4006e4;qsort_r;qsort_r_mergesort;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0;msort_with_tmp.part.0 1
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b78;0x400933;getpid;entry_SYSCALL_64_after_hwframe;do_syscall_64 2
+burn2;0x400425;__libc_start_main@GLIBC_2.2.5;__libc_start_call_main;0x400b7d;0x40099c;0x7fa76a3cd2b4 1
+burn2;__GI___clone3;start_thread;0x400b2d;0x400abf 1
+burn2;__GI___clone3;start_thread;0x400b2d;0x400aca;0x400a56 1
+burn2;__GI___clone3;start_thread;0x400b2d;0x400aca;0x400a5a 1
+burn2;__GI___clone3;start_thread;0x400b2d;0x400aca;0x400a6e 2
+burn2;__GI___clone3;start_thread;0x400b2d;0x400aca;0x400a80 3
+burn2;__GI___clone3;start_thread;0x400b2d;0x400ace 1

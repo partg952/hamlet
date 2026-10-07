@@ -181,6 +181,23 @@ the eBPF program (e.g. via a config map so only matching pids get counted)
 is a possible later optimization if per-sample overhead for irrelevant pids
 becomes a concern, but wasn't needed to validate the feature.
 
+## Output: folded stacks
+
+Output is in the "folded stack" format consumed by `flamegraph.pl`,
+`inferno-flamegraph`, speedscope, etc.: one line per unique stack,
+`root;frame;...;leaf <count>`.
+
+**Why folding happens in userspace by symbol name:** `HIST` buckets by stack
+*id*, and the kernel assigns a different id whenever the raw instruction
+pointers differ (e.g. samples landing at different offsets inside the same
+function). Those buckets resolve to identical names, so printing them
+per-bucket showed the same logical stack several times. Resolving first and
+summing counts into a `BTreeMap<String, u64>` merges them.
+
+Stack order is `process comm;user frames (root to leaf);kernel frames (root
+to leaf)`. The kernel stores frames leaf-first, so each is reversed. Status
+messages go to stderr so stdout can be piped straight into a flamegraph tool.
+
 ## Known rough edges / deliberately deferred
 
 - `strace_map.get(...)?` in the display loop aborts the entire dump if a
