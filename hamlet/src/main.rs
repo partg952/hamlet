@@ -20,6 +20,9 @@ use tokio::{signal, time::interval};
 struct Args {
     #[arg(long)]
     pid: Option<u32>,
+    /// Write an SVG flamegraph to this path instead of printing folded stacks to stdout.
+    #[arg(long)]
+    flamegraph: Option<PathBuf>,
 }
 struct Mapping {
     start: u64,
@@ -175,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
         program.attach(
             perf_event::PerfEventConfig::Software(perf_event::SoftwareEvent::CpuClock),
             perf_event::PerfEventScope::AllProcessesOneCpu { cpu },
-            perf_event::SamplePolicy::Frequency(1),
+            perf_event::SamplePolicy::Frequency(99),
             true,
         )?;
     }
@@ -248,8 +251,22 @@ async fn main() -> anyhow::Result<()> {
         *folded.entry(frames.join(";")).or_default() += count;
     }
 
-    for (stack, count) in folded {
-        println!("{stack} {count}");
+    if let Some(path) = args.flamegraph {
+        let lines: Vec<String> = folded
+            .into_iter()
+            .map(|(stack, count)| format!("{stack} {count}"))
+            .collect();
+        let file = fs::File::create(&path)?;
+        inferno::flamegraph::from_lines(
+            &mut inferno::flamegraph::Options::default(),
+            lines.iter().map(String::as_str),
+            file,
+        )?;
+        eprintln!("wrote flamegraph to {}", path.display());
+    } else {
+        for (stack, count) in folded {
+            println!("{stack} {count}");
+        }
     }
 
     Ok(())

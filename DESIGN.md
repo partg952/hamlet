@@ -103,7 +103,7 @@ given instruction pointer `ip` is:
 
 ```rust
 ksyms.range(..=ip).next_back()
-```
+```./
 
 **Why this pattern, not a direct `.get(&ip)`:** `/proc/kallsyms` only
 records where each function *starts*, not its length. A captured `ip` is
@@ -120,17 +120,47 @@ not continuously). The only source of drift is kernel modules being
 loaded/unloaded at runtime, which is an accepted limitation for now given
 this profiler's short, fixed-duration collection window.
 
-### User-space frames (planned)
+### User-space frames
 
-Not yet implemented as of this writing (frames currently print as raw hex
-addresses only). Plan, in order:
+Implemented as: parse `/proc/<pid>/maps` to find which file-backed mapping
+contains a given `ip`, giving a `(file path, mapping start, file_offset)`
+triple; convert `ip` to a file-relative offset:
+`offset = ip - mapping.start + mapping.file_offset`; resolve `offset`
+against that file's own symbol table using `addr2line::Loader::find_symbol`.
 
-1. Parse `/proc/<pid>/maps` to find which file-backed mapping contains a
-   given `ip`, giving a `(file path, mapping start, file_offset)` triple.
-2. Convert `ip` to a file-relative offset:
-   `offset = ip - mapping.start + mapping.file_offset`.
-3. Resolve `offset` against that file's own symbol table using
-   `addr2line::Loader::find_symbol`.
+**Known bug — wrong for non-PIE executables (confirmed):** the offset
+formula above is only correct when a binary's `PT_LOAD` segments have
+`p_vaddr == p_offset`, which holds for *position-independent* executables
+and shared libraries, but not for traditional non-PIE executables (e.g.
+anything linked with `-no-pie`, which is `gcc`'s default on some
+toolchains/targets). For those, symbol addresses in the ELF symbol table
+are absolute virtual addresses matching `ip` directly — subtracting
+`mapping.start` and adding `file_offset` produces a small, bogus number
+that matches no symbol.
+
+This was caught by testing against `burn2.c` (a non-PIE binary): every one
+of `burn2`'s own frames (`run_primes`, `is_prime`, `fib`, `mix`, ...)
+resolved to `None` and printed as raw hex, while libc frames (`qsort_r`,
+`msort_with_tmp.part.0`, `__libc_start_main`) *did* resolve correctly,
+because glibc on this system is a PIE shared object. This split — libc
+symbols resolving, the profiled program's own symbols not — is the
+diagnostic signature of this bug and is the first thing to check if a
+flamegraph is missing its own hot path.
+
+**Fix (not yet implemented):** read each mapping's underlying ELF headers
+to get the real `PT_LOAD` segment's `p_vaddr`/`p_offset`, and compute
+`ip - mapping.start + mapping.file_offset - p_offset + p_vaddr` instead of
+assuming the two are equal. Equivalently: detect non-PIE (`ET_EXEC`, not
+`ET_DYN`) binaries and pass `ip` to `addr2line` unmodified for those.
+
+**Unverified — shared libraries other than glibc:** the same formula should
+hold for *any* correctly mapped shared library (libm, libpthread, etc.)
+since those are all PIE/`ET_DYN`, but this has only been spot-checked
+against libc symbols so far; a raw-hex frame inside e.g. `libm.so` (seen in
+one `burn2` run for a `sin`/`cos` call) has not been root-caused and may be
+this same bug manifesting differently, or may be a `vdso`/`vsyscall`
+mapping, which has no backing file on disk for `addr2line::Loader::new` to
+open.
 
 **Why this is fundamentally different from the kernel case:** there is no
 single global symbol table for user space. An address only means something
@@ -198,7 +228,70 @@ Stack order is `process comm;user frames (root to leaf);kernel frames (root
 to leaf)`. The kernel stores frames leaf-first, so each is reversed. Status
 messages go to stderr so stdout can be piped straight into a flamegraph tool.
 
-## Known rough edges / deliberately deferred
+## Known issues
+
+Split into issues confirmed by running the profiler against test workloads
+(`burn.c`, `burn2.c`), versus issues suspected from reading the code but
+not yet reproduced.
+
+### Confirmed, by testing
+
+- **User-space symbols don't resolve for non-PIE binaries.** See "Known
+  bug" under User-space frames above. Confirmed against `burn2`: own-binary
+  frames print as raw hex, libc frames resolve fine.
+- **1Hz sampling is too sparse to be useful.** A 10-second run against
+  `burn2` (which has five distinct hot call paths plus a second thread)
+  produced only ~17 total samples total - too few to make the relative
+  widths in a flamegraph meaningful, and too few to reliably catch every
+  code path at all. Needs to go up to something like 99Hz per CPU; tracked
+  as a follow-up, not yet changed in code.
+- **`/proc/<pid>/maps` path parsing takes only the first whitespace-split
+  token of the path field** (`hamlet/src/main.rs`, `read_maps`). This
+  breaks for mapped paths containing spaces, and doesn't special-case
+  `(deleted)` suffixes (a mapping whose backing file was removed/replaced
+  after being mapped, e.g. during a redeploy) - the resulting `PathBuf`
+  won't exist on disk, so `addr2line::Loader::new` silently returns `None`
+  via `.ok()` and the frame falls back to raw hex, with no indication to
+  the user *why* that frame didn't resolve.
+
+### Suspected, not yet reproduced
+
+- **Frame-pointer-based stack walking can be incomplete.** `get_stackid`
+  (both kernel and user variants) walks frame pointers, not DWARF CFI. Any
+  library in the mapped address space built without frame pointers
+  (`-fomit-frame-pointer`, the default in many release builds/distro
+  packages) can produce truncated stacks or emit a bogus frame.
+  `burn`/`burn2` are built with `-O0` specifically to avoid this, so it
+  hasn't been observed here, but it will affect profiling real-world
+  optimized binaries.
+- **A frame inside `libm.so` printed as raw hex in one `burn2` run** (a
+  `sin`/`cos` call site). Not yet root-caused - candidates are the same
+  PIE/non-PIE offset bug manifesting some other way, a stripped libm on
+  this system, or the call landing in the `vdso` (which has no on-disk file
+  for `addr2line::Loader` to open, since it's synthesized by the kernel and
+  mapped directly from memory, not read from a file).
+- **`comm` (used as the root frame of each folded stack, via
+  `/proc/<pid>/comm`) is per-thread, not per-process, and capped at 15
+  bytes by the kernel.** For a multi-threaded program where worker threads
+  call `pthread_setname_np` to rename themselves (common in real-world
+  servers), samples from different threads of the *same logical process*
+  would fold under different root frame names instead of grouping under one
+  process-level root. `burn2`'s worker thread doesn't rename itself, so
+  this hasn't shown up in testing yet.
+- **Kernel-then-user frame ordering in a folded stack is an assumed
+  invariant, not something the code verifies.** The folding logic places
+  all user frames before all kernel frames on the theory that a sample
+  landing in the kernel always arrived via "user code enters kernel at
+  exactly one point, then kernel runs deeper from there" (matches the
+  `getpid;entry_SYSCALL_64_after_hwframe;do_syscall_64` tail seen in
+  `burn2`'s syscall path). This should hold for the ordinary
+  syscall/page-fault/interrupt case, but hasn't been checked against signal
+  handlers (user code pushed onto the user stack *by* the kernel,
+  interleaved with kernel delivery machinery) or kernel threads (no user
+  stack at all, so `uspace_id` should always be `-1` - assumed rather than
+  asserted).
+
+### Deliberately deferred
 
 - `strace_map.get(...)?` in the display loop aborts the entire dump if a
   single stack id lookup fails (e.g. evicted from the fixed-capacity
@@ -209,3 +302,21 @@ messages go to stderr so stdout can be piped straight into a flamegraph tool.
   replaced the original simple counter print. Currently orphaned; kept in
   case a simple aggregate "total samples" figure is wanted again later.
 - Collection duration is a hardcoded 10 one-second ticks, not configurable.
+
+### Operational / environment constraints
+
+- Requires root, or `CAP_BPF` + `CAP_PERFMON`, to load the eBPF program and
+  attach perf events - confirmed by testing: running unprivileged fails at
+  the first map-creation call (`failed to create map SAMPLE_COUNT:
+  Operation not permitted`).
+- Building `hamlet-ebpf` requires a `bpf-linker` binary on `PATH` whose
+  linked LLVM major version matches the nightly Rust toolchain used to
+  compile the eBPF target (`aya_build` shells out to `rustup run
+  <toolchain>`). A mismatch (e.g. a `nightly` built against LLVM 23 next to
+  a system `bpf-linker` built against LLVM 22) fails at the link step with
+  `ERROR llvm: Invalid record`, not at `bpf-linker` install time, making it
+  a confusing failure to debug. Worked around by pinning `hamlet/build.rs`
+  to `Toolchain::Custom("nightly-2026-04-15")`, a nightly release matching
+  the LLVM version the locally installed `bpf-linker` was built against -
+  this pin will need to be revisited if `bpf-linker` is reinstalled against
+  a different LLVM version.
