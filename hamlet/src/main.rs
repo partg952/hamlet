@@ -5,6 +5,7 @@ use aya::{
 };
 use clap::Parser;
 use hamlet_common::StackKey;
+use object::Object;
 use std::{
     collections::{BTreeMap, HashMap as StdHashMap},
     fs,
@@ -99,7 +100,7 @@ impl UserSymbolResolver {
 
         let mapping = find_mapping(mappings, ip)?;
 
-        let file_offset = to_file_offset(mapping, ip);
+        let vaddr = if is_non_pie(mapping) { ip } else { ip - mapping.start + mapping.offset };
         let path = mapping.path.clone();
 
         let loader = self
@@ -108,8 +109,18 @@ impl UserSymbolResolver {
             .or_insert_with(|| addr2line::Loader::new(&path).ok());
 
         let loader = loader.as_ref()?;
-        loader.find_symbol(file_offset).map(String::from)
+        loader.find_symbol(vaddr).map(String::from)
     }
+}
+
+fn is_non_pie(mapping: &Mapping) -> bool {
+    let Ok(file) = fs::read(&mapping.path) else {
+        return false;
+    };
+    let Ok(data) = object::File::parse(&file[..]) else {
+        return false;
+    };
+    data.kind() == object::ObjectKind::Executable
 }
 
 fn find_mapping<'a>(mappings: &'a Vec<Mapping>, ip: u64) -> Option<&'a Mapping> {
