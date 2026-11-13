@@ -555,6 +555,7 @@ dependencies = [
  "inferno",
  "libc",
  "log",
+ "object 0.40.0",
  "tokio",
 ]
 

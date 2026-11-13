@@ -15,6 +15,7 @@ clap = { workspace = true, features = ["derive"] }
 env_logger = { workspace = true }
 inferno = { workspace = true }
 libc = { workspace = true }
+object = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
