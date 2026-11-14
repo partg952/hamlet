@@ -83,6 +83,7 @@ fn read_maps(pid: u32) -> anyhow::Result<Vec<Mapping>> {
 struct UserSymbolResolver {
     maps_cache: StdHashMap<u32, Vec<Mapping>>,
     loader: StdHashMap<PathBuf, Option<addr2line::Loader>>,
+    non_pie: StdHashMap<PathBuf, bool>,
 }
 
 impl UserSymbolResolver {
@@ -90,6 +91,7 @@ impl UserSymbolResolver {
         return Self {
             maps_cache: StdHashMap::new(),
             loader: StdHashMap::new(),
+            non_pie: StdHashMap::new(),
         };
     }
     fn resolve(&mut self, pid: u32, ip: u64) -> Option<String> {
@@ -100,8 +102,18 @@ impl UserSymbolResolver {
 
         let mapping = find_mapping(mappings, ip)?;
 
-        let vaddr = if is_non_pie(mapping) { ip } else { ip - mapping.start + mapping.offset };
         let path = mapping.path.clone();
+
+        
+        let non_pie = *self
+            .non_pie
+            .entry(path.clone())
+            .or_insert_with(|| is_non_pie(mapping));
+        let vaddr = if non_pie {
+            ip
+        } else {
+            ip - mapping.start + mapping.offset
+        };
 
         let loader = self
             .loader
@@ -241,22 +253,36 @@ async fn main() -> anyhow::Result<()> {
         // A sampled stack runs: process -> user frames -> kernel frames (leaf).
         let mut frames = vec![process_name(stack_key.pid)];
         if stack_key.uspace_id >= 0 {
-            let userspace_trace = strace_map.get(&(stack_key.uspace_id as u32), 0)?;
-            for frame in userspace_trace.frames().iter().rev() {
-                frames.push(
-                    user_sym
-                        .resolve(stack_key.pid as u32, frame.ip)
-                        .unwrap_or_else(|| format!("{:#x}", frame.ip)),
-                );
+            match strace_map.get(&(stack_key.uspace_id as u32), 0) {
+                Ok(userspace_trace) => {
+                    for frame in userspace_trace.frames().iter().rev() {
+                        frames.push(
+                            user_sym
+                                .resolve(stack_key.pid as u32, frame.ip)
+                                .unwrap_or_else(|| format!("{:#x}", frame.ip)),
+                        );
+                    }
+                }
+                Err(e) => warn!(
+                    "skipping user stack {} for pid {}: {e}",
+                    stack_key.uspace_id, stack_key.pid
+                ),
             }
         }
         if stack_key.kspace_id >= 0 {
-            let kernel_trace = strace_map.get(&(stack_key.kspace_id as u32), 0)?;
-            for frame in kernel_trace.frames().iter().rev() {
-                frames.push(match ksyms.range(..=frame.ip).next_back() {
-                    Some((_, name)) => name.clone(),
-                    None => format!("{:#x}", frame.ip),
-                });
+            match strace_map.get(&(stack_key.kspace_id as u32), 0) {
+                Ok(kernel_trace) => {
+                    for frame in kernel_trace.frames().iter().rev() {
+                        frames.push(match ksyms.range(..=frame.ip).next_back() {
+                            Some((_, name)) => name.clone(),
+                            None => format!("{:#x}", frame.ip),
+                        });
+                    }
+                }
+                Err(e) => warn!(
+                    "skipping kernel stack {} for pid {}: {e}",
+                    stack_key.kspace_id, stack_key.pid
+                ),
             }
         }
         *folded.entry(frames.join(";")).or_default() += count;
