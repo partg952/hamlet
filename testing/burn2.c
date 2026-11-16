@@ -25,7 +25,8 @@
  *
  * Run:
  *     ./burn2 &
- *     sudo -E ./target/release/hamlet --pid $! > out.folded
+ *     sudo -E ../target/release/hamlet --pid $! > output/out.folded
+ *   (run from this directory, testing/)
  */
 
 #include <fcntl.h>
