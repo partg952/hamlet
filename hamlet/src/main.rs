@@ -24,6 +24,9 @@ struct Args {
     /// Write an SVG flamegraph to this path instead of printing folded stacks to stdout.
     #[arg(long)]
     flamegraph: Option<PathBuf>,
+    /// How long to collect samples, in seconds. Ctrl-C ends collection early.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+    duration: u64,
 }
 struct Mapping {
     start: u64,
@@ -216,10 +219,13 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("HIST not found"))?
         .try_into()?;
     let mut ticker = interval(Duration::from_secs(1));
-    let mut time = 10;
+    let mut time = args.duration;
     let ctrl_c = signal::ctrl_c();
     tokio::pin!(ctrl_c);
-    eprintln!("Waiting for Ctrl-C...");
+    eprintln!(
+        "Collecting samples for {} seconds (Ctrl-C to stop early)...",
+        args.duration
+    );
     loop {
         if time == 0 {
             break;
